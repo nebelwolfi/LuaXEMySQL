@@ -1,0 +1,3 @@
+LIBRARY   LMySQL
+EXPORTS
+   luaopen_mysql   @1
