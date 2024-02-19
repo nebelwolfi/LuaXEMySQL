@@ -1,4 +1,0 @@
-D:/LuaMySQLBinding/cmake-build-release/CMakeFiles/LuaMySQLBinding.dir
-D:/LuaMySQLBinding/cmake-build-release/CMakeFiles/LuaMySQLBindingTest.dir
-D:/LuaMySQLBinding/cmake-build-release/CMakeFiles/edit_cache.dir
-D:/LuaMySQLBinding/cmake-build-release/CMakeFiles/rebuild_cache.dir
