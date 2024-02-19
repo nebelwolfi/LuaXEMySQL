@@ -1,4 +1,8 @@
 #include "lua.hpp"
+#include <string>
+namespace LuaBinding {
+    using string_type = std::string;
+}
 #include "LuaBinding.h"
 #include "mysqlx/xdevapi.h"
 
@@ -136,7 +140,7 @@ extern "C" int luaopen_mysql(lua_State *L)
         })
         ;
 
-    State["Session"] = [](LuaBinding::State State) {
+    State.cfun([](LuaBinding::State State) {
         try {
             auto args = State.args();
             if (args.size() == 1)
@@ -154,12 +158,12 @@ extern "C" int luaopen_mysql(lua_State *L)
             State.error(e.what());
         }
         return 0;
-    };
+    });
 
-    return 0;
+    return 1;
 }
 
 int main() {
     auto State = LuaBinding::State(true);
-    luaopen_mysql(State);
+    return luaopen_mysql(State);
 }

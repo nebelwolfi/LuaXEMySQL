@@ -32,4 +32,10 @@ add_compile_options(
         $<$<CONFIG:Release>:/MT> #--|
 )
 
-add_custom_command(TARGET LuaMySQLBinding POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy LuaMySQLBinding.dll "C:\\ARPG\\mysql.dll")
+target_compile_options(LuaMySQLBinding PRIVATE "/Zi" PRIVATE "/O2" PRIVATE "/showIncludes")
+target_link_options(LuaMySQLBinding PRIVATE "/nologo" PRIVATE "/OPT:REF" PRIVATE "/OPT:ICF" PRIVATE "/INCREMENTAL" PRIVATE "/MACHINE:X64" PRIVATE "/LARGEADDRESSAWARE" PRIVATE "/LTCG")
+target_link_options(LuaMySQLBinding PRIVATE "/DEBUG")
+target_link_options(LuaMySQLBinding PRIVATE "/OPT:REF")
+target_link_options(LuaMySQLBinding PRIVATE "/OPT:ICF")
+
+add_custom_command(TARGET LuaMySQLBinding POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy LuaMySQLBinding.dll "mysql.dll")

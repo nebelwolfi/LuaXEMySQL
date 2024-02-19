@@ -1,0 +1,69 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-Release-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.23"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1
+					]
+				}
+			],
+			"name" : "Release",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "LuaMySQLBinding",
+					"targetIndexes" : 
+					[
+						0,
+						1
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "LuaMySQLBinding::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-LuaMySQLBinding-Release-b424778bff6e4f4fa2f3.json",
+					"name" : "LuaMySQLBinding",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "LuaMySQLBindingTest::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-LuaMySQLBindingTest-Release-2200b17368e9f5970593.json",
+					"name" : "LuaMySQLBindingTest",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "D:/LuaMySQLBinding/cmake-build-release",
+		"source" : "D:/LuaMySQLBinding"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 6
+	}
+}
