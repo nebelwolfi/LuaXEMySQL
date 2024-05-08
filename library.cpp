@@ -1,38 +1,36 @@
 #include "lua.hpp"
 #include <string>
-namespace LuaBinding {
-    using string_type = std::string;
-}
-#include "LuaBinding.h"
 #include "mysqlx/xdevapi.h"
+#include <shared/bind.h>
 
 extern "C" int luaopen_mysql(lua_State *L)
 {
-    auto State = LuaBinding::State(L);
-
-    State.addClass<mysqlx::Session>("Session")
-        .cfun("sql", [](mysqlx::Session* session, LuaBinding::State S) {
+    lua::bind::add<mysqlx::Session>(L, "Session")
+        .fun("sql", [](lua_State* L) -> int {
+            auto session = lua::check<mysqlx::Session>(L, 1);
             try {
-                auto query = S.at(2).as<const char*>();
+                auto query = luaL_checkstring(L, 2);
                 mysqlx::SqlResult r = session->sql(query).execute();
                 if (r.count() == 0) {
-                    lua_newtable(S);
+                    lua_newtable(L);
                     return 1;
                 }
                 auto rowlist = r.fetchAll();
-                std::vector<mysqlx::Row> rows;
-                for (auto row : rowlist)
-                    rows.push_back(row);
-                S.push(rows);
+                lua_newtable(L);
+                for (auto row : rowlist) {
+                    new (lua::alloc<mysqlx::Row>(L)) mysqlx::Row(row);
+                    lua_rawseti(L, -2, lua_objlen(L, -2) + 1);
+                }
                 return 1;
             } catch (const std::exception& e) {
-                S.error(e.what());
+                luaL_error(L, e.what());
             }
             return 0;
         });
 
-    State.addClass<mysqlx::Row>("Row")
-        .cfun("get", [](mysqlx::Row* row, lua_State *L) -> int {
+    lua::bind::add<mysqlx::Row>(L, "Row")
+        .fun("get", [](lua_State *L) -> int {
+            auto row = lua::check<mysqlx::Row>(L, 1);
             auto index = luaL_checkinteger(L, 2) - 1;
             auto v = (*row)[index];
             switch (v.getType()) {
@@ -60,7 +58,8 @@ extern "C" int luaopen_mysql(lua_State *L)
             }
             return 0;
         })
-        .meta_cfun("__cindex", [](mysqlx::Row* row, lua_State *L) -> int {
+        .meta_fun("__cindex", [](lua_State *L) -> int {
+            auto row = lua::check<mysqlx::Row>(L, 1);
             mysqlx::Value v;
             if (lua_isnumber(L, 2))
             {
@@ -93,19 +92,22 @@ extern "C" int luaopen_mysql(lua_State *L)
             }
             return 0;
         })
-        .cfun("type", [](mysqlx::Row* row, lua_State *L) -> int {
+        .fun("type", [](lua_State *L) -> int {
+            auto row = lua::check<mysqlx::Row>(L, 1);
             auto index = luaL_checkinteger(L, 2);
             auto v = (*row)[index];
             lua_pushinteger(L, v.getType());
             return 1;
         })
-        .cfun("elementCount", [](mysqlx::Row* row, lua_State *L) -> int {
+        .fun("elementCount", [](lua_State *L) -> int {
+            auto row = lua::check<mysqlx::Row>(L, 1);
             auto index = luaL_checkinteger(L, 2);
             auto v = (*row)[index];
             lua_pushinteger(L, v.elementCount());
             return 1;
         })
-        .cfun("at", [](mysqlx::Row* row, lua_State *L) -> int {
+        .fun("at", [](lua_State *L) -> int {
+            auto row = lua::check<mysqlx::Row>(L, 1);
             auto index = luaL_checkinteger(L, 2);
             auto subindex = luaL_checkinteger(L, 3);
             auto v = (*row)[index][(int)subindex];
@@ -134,36 +136,34 @@ extern "C" int luaopen_mysql(lua_State *L)
             }
             return 0;
         })
-        .prop_cfun("colCount", [](mysqlx::Row* row, lua_State *L) -> int {
+        .prop("colCount", [](lua_State *L) -> int {
+            auto row = lua::check<mysqlx::Row>(L, 1);
             lua_pushinteger(L, row->colCount());
             return 1;
         })
         ;
 
-    State.cfun([](LuaBinding::State State) {
+    lua_pushcfunction(L, +[](lua_State* L) {
         try {
-            auto args = State.args();
-            if (args.size() == 1)
+            auto argn = lua_gettop(L);
+            if (argn == 1)
             {
-                State.alloc<mysqlx::Session>(args[0].as<const char*>());
+                //State.alloc<mysqlx::Session>(args[0].as<const char*>());
+                new (lua::alloc<mysqlx::Session>(L)) mysqlx::Session(lua_tostring(L, 1));
             }
-            else if (args.size() == 4)
+            else if (argn == 4)
             {
-                State.alloc<mysqlx::Session>(args[0].as<const char*>(), args[1].as<const char*>(), args[2].as<const char*>(), args[3].as<const char*>());
+                //State.alloc<mysqlx::Session>(args[0].as<const char*>(), args[1].as<const char*>(), args[2].as<const char*>(), args[3].as<const char*>());
+                new (lua::alloc<mysqlx::Session>(L)) mysqlx::Session(lua_tostring(L, 1), lua_tostring(L, 2), lua_tostring(L, 3), lua_tostring(L, 4));
             }
             else
                 throw std::runtime_error("Invalid number of arguments");
             return 1;
         } catch (const std::exception& e) {
-            State.error(e.what());
+            luaL_error(L, e.what());
         }
         return 0;
     });
 
     return 1;
-}
-
-int main() {
-    auto State = LuaBinding::State(true);
-    return luaopen_mysql(State);
 }
