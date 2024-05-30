@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 23)
 include_directories(Dependencies\\Lua\\)
 include_directories(Dependencies\\Include\\)
 include_directories(C:\\LuaJIT-2.1.M.64\\src)
-include_directories(D:\\LuaXE\\include)
+include_directories(D:\\LuaXE\\shared\\include)
 
 add_library(LuaMySQLBinding SHARED library.cpp dll.def)
 
