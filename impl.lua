@@ -62,10 +62,14 @@ local function sql_value(v)
         return tostring(v)
     elseif t == "boolean" then
         return v and "1" or "0"
-    elseif t == "string" then
-        return mysql_escape(v)
     elseif t == "cdata" then
         return "0x" .. string.format("%X", v)
+    elseif t == "string" then
+        if v:find("^0x[%da-fA-F]+$") then
+            -- Hex literal, pass through as is.
+            return v
+        end
+        return mysql_escape(v)
     elseif t == "table" then
         local hex = ""
         local s, e = pcall(function()
@@ -131,7 +135,7 @@ local function bind_placeholders(sql, params)
                         end
                     end
                     local val = params[name]
-                    assert(val ~= nil, ("missing value for :%s"):format(name))
+                    --assert(val ~= nil, ("missing value for :%s"):format(name))
                     out[#out+1] = sql_value(val)
                 end
             else
@@ -294,11 +298,11 @@ local function minify_sql(sql, opts)
     while out[#out] == " " do out[#out] = nil end
     return table.concat(out)
 end
-mysql.minify_sql = minify_sql
+mysql.minify = minify_sql
 local function prepare_statement(sql, params, minify)
     assert(type(sql) == "string", "sql must be a string")
     assert(type(params) == "table", "params must be an array-like table")
-    if minify then
+    if minify ~= false then
         return minify_sql(bind_placeholders(sql, params))
     else
         return bind_placeholders(sql, params)
