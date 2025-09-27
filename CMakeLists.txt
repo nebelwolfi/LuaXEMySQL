@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 23)
 include_directories(Dependencies\\Lua\\)
 include_directories(Dependencies\\Include\\)
 include_directories(C:\\LuaJIT-2.1.M.64\\src)
-include_directories(D:\\LuaXE\\shared\\include)
+include_directories(..\\..\\shared\\include\\)
 
 add_library(LuaMySQLBinding SHARED library.cpp dll.def)
 
@@ -34,4 +34,4 @@ target_link_options(LuaMySQLBinding PRIVATE "/DEBUG")
 target_link_options(LuaMySQLBinding PRIVATE "/OPT:REF")
 target_link_options(LuaMySQLBinding PRIVATE "/OPT:ICF")
 
-add_custom_command(TARGET LuaMySQLBinding POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy LuaMySQLBinding.dll "mysql.dll")
+add_custom_command(TARGET LuaMySQLBinding POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy LuaMySQLBinding.dll "mysql_core.dll")
