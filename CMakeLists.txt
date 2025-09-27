@@ -34,4 +34,5 @@ target_link_options(LuaMySQLBinding PRIVATE "/DEBUG")
 target_link_options(LuaMySQLBinding PRIVATE "/OPT:REF")
 target_link_options(LuaMySQLBinding PRIVATE "/OPT:ICF")
 
-add_custom_command(TARGET LuaMySQLBinding POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy LuaMySQLBinding.dll "mysql_core.dll")
+add_custom_command(TARGET LuaMySQLBinding POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy LuaMySQLBinding.dll "mysql.dll")
+add_custom_command(TARGET LuaMySQLBinding POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy LuaMySQLBinding.dll "C:\\Users\\Denni\\Desktop\\hwids2\\modules\\mysql\\mysql.dll")

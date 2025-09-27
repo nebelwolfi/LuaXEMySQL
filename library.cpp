@@ -1,53 +1,63 @@
-#include "lua.hpp"
-#include <string>
+#include <luaxe/luaxe.hpp>
 #include "mysqlx/xdevapi.h"
-#include <luaxe/bind.h>
 
 // -----------------------------
 // Helpers: Value <-> Lua
 // -----------------------------
 int lua_push_mysql_value(lua_State* L, const mysqlx::Value& v) {
-    switch (v.getType()) {
-        case mysqlx::Value::Type::VNULL:
-            return 0;
-        case mysqlx::Value::Type::STRING: {
-            auto str = v.get<std::string>();
-            lua_pushlstring(L, str.c_str(), str.length());
-        }   return 1;
-        case mysqlx::Value::Type::UINT64:
-            lua_pushinteger(L, v.get<uint64_t>());
-            return 1;
-        case mysqlx::Value::Type::INT64:
-            lua_pushinteger(L, v.get<int64_t>());
-            return 1;
-        case mysqlx::Value::Type::FLOAT:
-            lua_pushnumber(L, v.get<float>());
-            return 1;
-        case mysqlx::Value::Type::DOUBLE:
-            lua_pushnumber(L, v.get<double>());
-            return 1;
-        case mysqlx::Value::Type::BOOL:
-            lua_pushboolean(L, v.get<bool>());
-            return 1;
-        case mysqlx::abi2::r0::Value::RAW: {
-            auto &&bytes = v.getRawBytes();
-            lua_pushlstring(L, reinterpret_cast<const char *>(bytes.first), bytes.second);
-            return 1;
-        }
-        case mysqlx::abi2::r0::Value::ARRAY: {
-            auto&& count = v.elementCount();
-            lua_newtable(L);
-            for (size_t i = 0; i < count; ++i) {
-                auto&& elem = v[(int)i];
-                lua_push_mysql_value(L, elem);
-                lua_rawseti(L, -2, i + 1);
+    try {
+        switch (v.getType()) {
+            case mysqlx::Value::Type::VNULL:
+                return 0;
+            case mysqlx::Value::Type::STRING: {
+                auto str = v.get<std::string>();
+                lua_pushlstring(L, str.c_str(), str.length());
+            }   return 1;
+            case mysqlx::Value::Type::UINT64: {
+                char push_buf[255] = {0};
+                snprintf(push_buf, sizeof(push_buf), "return %lluULL", v.get<std::uint64_t>());
+                if (luaL_dostring(L, push_buf) != LUA_OK) {
+                    luaL_error(L, "Failed to push uint64: %s", lua_tostring(L, -1));
+                }
+            }   return 1;
+            case mysqlx::Value::Type::INT64: {
+                char push_buf[255] = {0};
+                snprintf(push_buf, sizeof(push_buf), "return %lldLL", v.get<std::int64_t>());
+                if (luaL_dostring(L, push_buf) != LUA_OK) {
+                    luaL_error(L, "Failed to push int64: %s", lua_tostring(L, -1));
+                }
+            }   return 1;
+            case mysqlx::Value::Type::FLOAT:
+                lua_pushnumber(L, v.get<float>());
+                return 1;
+            case mysqlx::Value::Type::DOUBLE:
+                lua_pushnumber(L, v.get<double>());
+                return 1;
+            case mysqlx::Value::Type::BOOL:
+                lua_pushboolean(L, v.get<bool>());
+                return 1;
+            case mysqlx::abi2::r0::Value::RAW: {
+                auto &&bytes = v.getRawBytes();
+                lua_pushlstring(L, reinterpret_cast<const char *>(bytes.first), bytes.second);
+                return 1;
             }
-            return 1;
+            case mysqlx::abi2::r0::Value::ARRAY: {
+                auto&& count = v.elementCount();
+                lua_newtable(L);
+                for (size_t i = 0; i < count; ++i) {
+                    auto&& elem = v[(int)i];
+                    lua_push_mysql_value(L, elem);
+                    lua_rawseti(L, -2, i + 1);
+                }
+                return 1;
+            }
+            case mysqlx::abi2::r0::Value::DOCUMENT: {
+                new (lua::alloc<mysqlx::DbDoc>(L)) mysqlx::DbDoc(v.get<mysqlx::DbDoc>());
+                return 1;
+            }
         }
-        case mysqlx::abi2::r0::Value::DOCUMENT: {
-            new (lua::alloc<mysqlx::DbDoc>(L)) mysqlx::DbDoc(v.get<mysqlx::DbDoc>());
-            return 1;
-        }
+    } catch (const std::exception& e) {
+        luaL_error(L, e.what());
     }
     return 0;
 }
@@ -75,9 +85,26 @@ static mysqlx::Value lua_to_mysql_value(lua_State* L, int idx) {
             luaL_error(L, "Unsupported userdata for bind value");
             break;
         }
+        case 10: { // cdata, probably (u)int64 from LuaJIT
+            auto abs_idx = lua_absindex(L, idx);
+            lua_getglobal(L, "tostring");
+            lua_pushvalue(L, abs_idx);
+            lua_call(L, 1, 1);
+            std::string_view val = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            if (val.ends_with("ULL")) {
+                val.remove_suffix(3);
+                return mysqlx::Value((std::uint64_t)std::stoull(std::string(val)));
+            } else if (val.ends_with("LL")) {
+                val.remove_suffix(2);
+                return mysqlx::Value((std::int64_t)std::stoll(std::string(val)));
+            } else {
+                luaL_error(L, "Unsupported cdata for bind value: %s", val.data());
+            }
+        }
     }
-    luaL_error(L, "Unsupported Lua type for bind value");
-    return mysqlx::Value();
+    luaL_error(L, "Unsupported Lua type (%d) for bind value", lua_type(L, idx));
+    return mysqlx::Value(); // unreachable
 }
 
 // -----------------------------
@@ -239,27 +266,39 @@ extern "C" int luaopen_mysql_core(lua_State *L)
             .fun("type", [](lua_State *L) -> int {
                 auto r = lua::check<Row>(L, 1);
                 int index = (int)luaL_checkinteger(L, 2) - 1;
-                auto&& v = (*r)[index];
-                lua_pushinteger(L, (lua_Integer)v.getType());
-                return 1;
+                try {
+                    auto&& v = (*r)[index];
+                    lua_pushinteger(L, (lua_Integer)v.getType());
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             .fun("elementCount", [](lua_State *L) -> int {
                 auto r = lua::check<Row>(L, 1);
                 int index = (int)luaL_checkinteger(L, 2) - 1;
-                auto&& v = (*r)[index];
-                lua_pushinteger(L, (lua_Integer)v.elementCount());
-                return 1;
+                try {
+                    auto&& v = (*r)[index];
+                    lua_pushinteger(L, (lua_Integer)v.elementCount());
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             .fun("at", [](lua_State *L) -> int {
                 auto r = lua::check<Row>(L, 1);
                 int index = (int)luaL_checkinteger(L, 2) - 1;
                 int subindex = (int)luaL_checkinteger(L, 3) - 1;
-                return lua_push_mysql_value(L, (*r)[index][subindex]);
+                try {
+                    return lua_push_mysql_value(L, (*r)[index][subindex]);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             .prop("colCount", [](lua_State *L) -> int {
                 auto r = lua::check<Row>(L, 1);
-                lua_pushinteger(L, (lua_Integer)r->colCount());
-                return 1;
+                try {
+                    lua_pushinteger(L, (lua_Integer)r->colCount());
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             ;
 
@@ -267,13 +306,18 @@ extern "C" int luaopen_mysql_core(lua_State *L)
             .fun("get", [](lua_State *L) -> int {
                 auto d = lua::check<DbDoc>(L, 1);
                 const char* key = luaL_checkstring(L, 2);
-                return lua_push_mysql_value(L, (*d)[key]);
+                try {
+                    return lua_push_mysql_value(L, (*d)[key]);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             .meta_fun("__cindex", [](lua_State *L) -> int {
                 auto d = lua::check<DbDoc>(L, 1);
                 if (lua_isstring(L, 2)) {
                     const char* key = luaL_checkstring(L, 2);
-                    return lua_push_mysql_value(L, (*d)[key]);
+                    try {
+                        return lua_push_mysql_value(L, (*d)[key]);
+                    } catch (const std::exception& e) { luaL_error(L, e.what()); }
                 }
                 return 0;
             })
@@ -314,75 +358,143 @@ extern "C" int luaopen_mysql_core(lua_State *L)
             })
             .fun("existsInDatabase", [](lua_State* L) -> int {
                 auto sc = lua::check<Schema>(L, 1);
-                lua_pushboolean(L, sc->existsInDatabase());
-                return 1;
+                try {
+                    lua_pushboolean(L, sc->existsInDatabase());
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             .fun("getTable", [](lua_State* L) -> int {
                 auto sc = lua::check<Schema>(L, 1);
                 const char* name = luaL_checkstring(L, 2);
-                new (lua::alloc<Table>(L)) Table(sc->getTable(name));
-                return 1;
+                try {
+                    new (lua::alloc<Table>(L)) Table(sc->getTable(name));
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             ;
 
     lua::bind::add<Table>(L, "Table")
             .prop("name", [](lua_State* L) -> int {
                 auto t = lua::check<Table>(L, 1);
-                std::string n = t->getName();
-                lua_pushlstring(L, n.c_str(), n.size());
-                return 1;
+                try {
+                    std::string n = t->getName();
+                    lua_pushlstring(L, n.c_str(), n.size());
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             .fun("select", [](lua_State* L) -> int {
                 auto t = lua::check<Table>(L, 1);
                 int top = lua_gettop(L);
                 std::vector<std::string> cols;
                 for (int i = 2; i <= top; ++i) cols.emplace_back(luaL_checkstring(L, i));
-                TableSelect sel = cols.empty() ? t->select("*") : t->select(cols.begin(), cols.end());
-                new (lua::alloc<TableSelect>(L)) TableSelect(std::move(sel));
-                return 1;
+                try {
+                    TableSelect sel = cols.empty() ? t->select("*") : t->select(cols.begin(), cols.end());
+                    new (lua::alloc<TableSelect>(L)) TableSelect(std::move(sel));
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             .fun("insert", [](lua_State* L) -> int {
                 auto t = lua::check<Table>(L, 1);
                 int top = lua_gettop(L);
                 std::vector<std::string> cols;
                 for (int i = 2; i <= top; ++i) cols.emplace_back(luaL_checkstring(L, i));
-                TableInsert ins = cols.empty() ? t->insert() : t->insert(cols.begin(), cols.end());
-                new (lua::alloc<TableInsert>(L)) TableInsert(std::move(ins));
-                return 1;
+                try {
+                    TableInsert ins = cols.empty() ? t->insert() : t->insert(cols.begin(), cols.end());
+                    new (lua::alloc<TableInsert>(L)) TableInsert(std::move(ins));
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             .fun("update", [](lua_State* L) -> int {
                 auto t = lua::check<Table>(L, 1);
-                TableUpdate up = t->update();
-                new (lua::alloc<TableUpdate>(L)) TableUpdate(std::move(up));
-                return 1;
+                try {
+                    TableUpdate up = t->update();
+                    new (lua::alloc<TableUpdate>(L)) TableUpdate(std::move(up));
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             .fun("remove", [](lua_State* L) -> int {
                 auto t = lua::check<Table>(L, 1);
-                TableRemove del = t->remove();
-                new (lua::alloc<TableRemove>(L)) TableRemove(std::move(del));
-                return 1;
+                try {
+                    TableRemove del = t->remove();
+                    new (lua::alloc<TableRemove>(L)) TableRemove(std::move(del));
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
             })
             ;
 
     lua::bind::add<TableSelect>(L, "TableSelect")
-            .fun("where", [](lua_State* L) -> int { auto s = lua::check<TableSelect>(L, 1); const char* e = luaL_checkstring(L, 2); s->where(e); lua_settop(L,1); return 1; })
+            .fun("where", [](lua_State* L) -> int {
+                auto s = lua::check<TableSelect>(L, 1);
+                const char* e = luaL_checkstring(L, 2);
+                try {
+                    s->where(e);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1);
+                return 1;
+            })
             .fun("groupBy", [](lua_State* L) -> int {
                 auto s = lua::check<TableSelect>(L, 1);
                 int top = lua_gettop(L); std::vector<std::string> v; for (int i=2;i<=top;++i) v.emplace_back(luaL_checkstring(L,i));
                 s->groupBy(v.begin(), v.end()); lua_settop(L,1); return 1;
             })
-            .fun("having", [](lua_State* L) -> int { auto s = lua::check<TableSelect>(L, 1); const char* e = luaL_checkstring(L, 2); s->having(e); lua_settop(L,1); return 1; })
-            .fun("orderBy", [](lua_State* L) -> int { auto s = lua::check<TableSelect>(L, 1); int top = lua_gettop(L); std::vector<std::string> v; for (int i=2;i<=top;++i) v.emplace_back(luaL_checkstring(L,i)); s->orderBy(v.begin(), v.end()); lua_settop(L,1); return 1; })
-            .fun("limit", [](lua_State* L) -> int { auto s = lua::check<TableSelect>(L, 1); std::uint64_t n = (std::uint64_t)luaL_checkinteger(L, 2); s->limit(n); lua_settop(L,1); return 1; })
-            .fun("offset", [](lua_State* L) -> int { auto s = lua::check<TableSelect>(L, 1); std::uint64_t n = (std::uint64_t)luaL_checkinteger(L, 2); s->offset(n); lua_settop(L,1); return 1; })
+            .fun("having", [](lua_State* L) -> int {
+                auto s = lua::check<TableSelect>(L, 1);
+                const char* e = luaL_checkstring(L, 2);
+                try {
+                    s->having(e);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1); return 1;
+            })
+            .fun("orderBy", [](lua_State* L) -> int {
+                auto s = lua::check<TableSelect>(L, 1);
+                int top = lua_gettop(L);
+                std::vector<std::string> v;
+                for (int i=2;i<=top;++i) v.emplace_back(luaL_checkstring(L,i));
+                try {
+                    s->orderBy(v.begin(), v.end());
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1); return 1;
+            })
+            .fun("limit", [](lua_State* L) -> int {
+                auto s = lua::check<TableSelect>(L, 1);
+                std::uint64_t n = (std::uint64_t)luaL_checkinteger(L, 2);
+                try {
+                    s->limit(n);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1); return 1;
+            })
+            .fun("offset", [](lua_State* L) -> int {
+                auto s = lua::check<TableSelect>(L, 1);
+                std::uint64_t n = (std::uint64_t)luaL_checkinteger(L, 2);
+                try {
+                    s->offset(n);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1); return 1;
+            })
             .fun("bind", [](lua_State* L) -> int {
                 auto s = lua::check<TableSelect>(L, 1);
                 auto str = luaL_checkstring(L, 2);
                 auto v = lua_to_mysql_value(L, 3);
-                s->bind(str, v);
+                try {
+                    s->bind(str, v);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
                 lua_settop(L,1); return 1;
             })
-            .fun("execute", [](lua_State* L) -> int { auto s = lua::check<TableSelect>(L, 1); RowResult rr = s->execute(); return push_rowresult(L, rr); })
+            .fun("execute", [](lua_State* L) -> int {
+                auto s = lua::check<TableSelect>(L, 1);
+                try {
+                    RowResult rr = s->execute();
+                    return push_rowresult(L, rr);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            })
             ;
 
     lua::bind::add<TableInsert>(L, "TableInsert")
@@ -394,36 +506,108 @@ extern "C" int luaopen_mysql_core(lua_State *L)
                 ins->values(vals.begin(), vals.end());
                 lua_settop(L,1); return 1;
             })
-            .fun("execute", [](lua_State* L) -> int { auto ins = lua::check<TableInsert>(L, 1); Result r = ins->execute(); return push_result_info(L, r); })
+            .fun("execute", [](lua_State* L) -> int {
+                auto ins = lua::check<TableInsert>(L, 1);
+                try {
+                    Result r = ins->execute();
+                    return push_result_info(L, r);
+                }
+                catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            })
             ;
 
     lua::bind::add<TableUpdate>(L, "TableUpdate")
-            .fun("set", [](lua_State* L) -> int { auto up = lua::check<TableUpdate>(L, 1); const char* f = luaL_checkstring(L,2); const char* e = luaL_checkstring(L,3); up->set(f, e); lua_settop(L,1); return 1; })
-            .fun("where", [](lua_State* L) -> int { auto up = lua::check<TableUpdate>(L, 1); const char* e = luaL_checkstring(L,2); up->where(e); lua_settop(L,1); return 1; })
-            .fun("orderBy", [](lua_State* L) -> int { auto up = lua::check<TableUpdate>(L, 1); int top = lua_gettop(L); std::vector<std::string> v; for (int i=2;i<=top;++i) v.emplace_back(luaL_checkstring(L,i)); up->orderBy(v.begin(), v.end()); lua_settop(L,1); return 1; })
-            .fun("limit", [](lua_State* L) -> int { auto up = lua::check<TableUpdate>(L, 1); std::uint64_t n = (std::uint64_t)luaL_checkinteger(L,2); up->limit(n); lua_settop(L,1); return 1; })
+            .fun("set", [](lua_State* L) -> int {
+                auto up = lua::check<TableUpdate>(L, 1);
+                const char* f = luaL_checkstring(L,2); const char* e = luaL_checkstring(L,3); up->set(f, e);
+                lua_settop(L,1); return 1;
+            })
+            .fun("where", [](lua_State* L) -> int {
+                auto up = lua::check<TableUpdate>(L, 1);
+                const char* e = luaL_checkstring(L,2); up->where(e);
+                lua_settop(L,1); return 1;
+            })
+            .fun("orderBy", [](lua_State* L) -> int {
+                auto up = lua::check<TableUpdate>(L, 1);
+                int top = lua_gettop(L);
+                std::vector<std::string> v;
+                for (int i=2;i<=top;++i) v.emplace_back(luaL_checkstring(L,i));
+                try {
+                    up->orderBy(v.begin(), v.end());
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1); return 1;
+            })
+            .fun("limit", [](lua_State* L) -> int {
+                auto up = lua::check<TableUpdate>(L, 1);
+                std::uint64_t n = (std::uint64_t)luaL_checkinteger(L,2);
+                try {
+                    up->limit(n);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1); return 1;
+            })
             .fun("bind", [](lua_State* L) -> int {
                 auto up = lua::check<TableUpdate>(L, 1);
                 auto str = luaL_checkstring(L, 2);
                 auto v = lua_to_mysql_value(L, 3);
-                up->bind(str, v);
+                try {
+                    up->bind(str, v);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
                 lua_settop(L,1); return 1;
             })
-            .fun("execute", [](lua_State* L) -> int { auto up = lua::check<TableUpdate>(L, 1); Result r = up->execute(); return push_result_info(L, r); })
+            .fun("execute", [](lua_State* L) -> int {
+                auto up = lua::check<TableUpdate>(L, 1);
+                try {
+                    Result r = up->execute();
+                    return push_result_info(L, r);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            })
             ;
 
     lua::bind::add<TableRemove>(L, "TableDelete")
-            .fun("where", [](lua_State* L) -> int { auto del = lua::check<TableRemove>(L, 1); const char* e = luaL_checkstring(L,2); del->where(e); lua_settop(L,1); return 1; })
-            .fun("orderBy", [](lua_State* L) -> int { auto del = lua::check<TableRemove>(L, 1); int top = lua_gettop(L); std::vector<std::string> v; for (int i=2;i<=top;++i) v.emplace_back(luaL_checkstring(L,i)); del->orderBy(v.begin(), v.end()); lua_settop(L,1); return 1; })
-            .fun("limit", [](lua_State* L) -> int { auto del = lua::check<TableRemove>(L, 1); std::uint64_t n = (std::uint64_t)luaL_checkinteger(L,2); del->limit(n); lua_settop(L,1); return 1; })
+            .fun("where", [](lua_State* L) -> int {
+                auto del = lua::check<TableRemove>(L, 1);
+                const char* e = luaL_checkstring(L,2);
+                try {
+                    del->where(e);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1); return 1;
+            })
+            .fun("orderBy", [](lua_State* L) -> int {
+                auto del = lua::check<TableRemove>(L, 1);
+                int top = lua_gettop(L); std::vector<std::string> v;
+                for (int i=2;i<=top;++i) v.emplace_back(luaL_checkstring(L,i));
+                try {
+                    del->orderBy(v.begin(), v.end());
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1); return 1;
+            })
+            .fun("limit", [](lua_State* L) -> int {
+                auto del = lua::check<TableRemove>(L, 1);
+                std::uint64_t n = (std::uint64_t)luaL_checkinteger(L,2);
+                try {
+                    del->limit(n);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                lua_settop(L,1); return 1;
+            })
             .fun("bind", [](lua_State* L) -> int {
                 auto del = lua::check<TableRemove>(L, 1);
                 auto str = luaL_checkstring(L, 2);
                 auto v = lua_to_mysql_value(L, 3);
-                del->bind(str, v);
+                try {
+                    del->bind(str, v);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
                 lua_settop(L,1); return 1;
             })
-            .fun("execute", [](lua_State* L) -> int { auto del = lua::check<TableRemove>(L, 1); Result r = del->execute(); return push_result_info(L, r); })
+            .fun("execute", [](lua_State* L) -> int {
+                auto del = lua::check<TableRemove>(L, 1);
+                try {
+                    Result r = del->execute();
+                    return push_result_info(L, r);
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            })
             ;
 
     lua_pushcfunction(L, +[](lua_State* L) {
@@ -450,5 +634,13 @@ extern "C" int luaopen_mysql_core(lua_State *L)
         return 0;
     });
 
+    return 1;
+}
+
+extern "C" int luaopen_mysql(lua_State *L)
+{
+    lua_getglobal(L, "require");
+    lua_pushstring(L, "mysql.impl");
+    lua_call(L, 1, 1);
     return 1;
 }

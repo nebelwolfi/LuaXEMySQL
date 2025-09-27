@@ -1,3 +1,4 @@
 LIBRARY   LMySQL
 EXPORTS
-   luaopen_mysql_core   @1
+   luaopen_mysql   @1
+   luaopen_mysql_core   @2
