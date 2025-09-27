@@ -107,9 +107,6 @@ static mysqlx::Value lua_to_mysql_value(lua_State* L, int idx) {
     return mysqlx::Value(); // unreachable
 }
 
-// -----------------------------
-// Helpers: push results
-// -----------------------------
 static int push_row_table(lua_State* L, const std::vector<mysqlx::Row>& rows) {
     lua_newtable(L);
     for (const auto& row : rows) {
@@ -119,50 +116,170 @@ static int push_row_table(lua_State* L, const std::vector<mysqlx::Row>& rows) {
     return 1;
 }
 
-static int push_rowresult(lua_State* L, mysqlx::RowResult& rr) {
-    auto rows = rr.fetchAll();
-    return push_row_table(L, rows);
+template<typename ResultT, bool can_increment>
+auto bind_result_type(lua_State *L, const char* name)
+{
+    auto&& c = lua::bind::add<ResultT>(L, name)
+            .fun("getAffectedItemsCount", [](lua_State* L) -> int {
+                auto r = lua::check<ResultT>(L, 1);
+                try {
+                    lua_pushinteger(L, (lua_Integer)r->getAffectedItemsCount());
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            })
+            .prop("affected", [](lua_State* L) -> int {
+                auto r = lua::check<ResultT>(L, 1);
+                try {
+                    lua_pushinteger(L, (lua_Integer)r->getAffectedItemsCount());
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            })
+            .prop("warnings", [](lua_State* L) -> int {
+                auto r = lua::check<ResultT>(L, 1);
+                try {
+                    unsigned wc = r->getWarningsCount();
+                    lua_newtable(L);
+                    for (unsigned i = 0; i < wc; ++i) {
+                        auto w = r->getWarning(i);
+                        lua_newtable(L);
+                        auto level = w.getLevel();
+                        lua_pushstring(L, level == mysqlx::Warning::LEVEL_ERROR ? "error" : level == mysqlx::Warning::LEVEL_WARNING ? "warning" : "info");
+                        lua_setfield(L, -2, "level");
+                        lua_pushinteger(L, (lua_Integer)w.getCode());
+                        lua_setfield(L, -2, "code");
+                        lua_push_mysql_value(L, w.getMessage());
+                        lua_setfield(L, -2, "message");
+                        lua_rawseti(L, -2, (int)i + 1);
+                    }
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            });
+    if constexpr (can_increment)
+            c.fun("getAutoIncrementValue", [](lua_State* L) -> int {
+                auto r = lua::check<ResultT>(L, 1);
+                try {
+                    std::uint64_t id = r->getAutoIncrementValue();
+                    lua_pushinteger(L, (lua_Integer)id);
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            })
+            .prop("auto_id", [](lua_State* L) -> int {
+                auto r = lua::check<ResultT>(L, 1);
+                try {
+                    std::uint64_t id = r->getAutoIncrementValue();
+                    lua_pushinteger(L, (lua_Integer)id);
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            });
+    return c;
 }
 
-static int push_docresult(lua_State* L, mysqlx::DocResult& dr) {
-    auto docs = dr.fetchAll();
-    lua_newtable(L);
-    for (const auto& d : docs) {
-        new (lua::alloc<mysqlx::DbDoc>(L)) mysqlx::DbDoc(d);
-        lua_rawseti(L, -2, (int)lua_objlen(L, -2) + 1);
-    }
-    return 1;
+template<typename RowResultT, typename RowT, bool can_increment>
+auto bind_row_result_type(lua_State *L, const char* name)
+{
+    return bind_result_type<RowResultT, can_increment>(L, name)
+        .prop("count", [](lua_State* L) -> int {
+            auto r = lua::check<RowResultT>(L, 1);
+            try {
+                lua_pushinteger(L, (lua_Integer)r->count());
+                return 1;
+            } catch (const std::exception& e) { luaL_error(L, e.what()); }
+            return 0;
+        })
+        .meta_fun("__len", [](lua_State* L) -> int {
+            auto r = lua::check<RowResultT>(L, 1);
+            try {
+                lua_pushinteger(L, (lua_Integer)r->count());
+                return 1;
+            } catch (const std::exception& e) { luaL_error(L, e.what()); }
+            return 0;
+        })
+        .meta_fun("__cindex", [](lua_State *L) -> int {
+            auto r = lua::check<RowResultT>(L, 1);
+            if (lua_isnumber(L, 2)) {
+                int index = (int)luaL_checkinteger(L, 2) - 1;
+                if (index == 0) {
+                    RowT row = r->fetchOne();
+                    new (lua::alloc<RowT>(L)) RowT(std::move(row));
+                    return 1;
+                } else if (index > 0 && (size_t)index < r->count()) {
+                    const std::vector<RowT>& rows = r->fetchAll();
+                    new (lua::alloc<RowT>(L)) RowT(rows.at((size_t)index));
+                    return 1;
+                } else {
+                    luaL_error(L, "Index out of bounds");
+                }
+            }
+            return 0;
+        })
+        .fun("fetchOne", [](lua_State* L) -> int {
+            auto r = lua::check<RowResultT>(L, 1);
+            try {
+                RowT row = r->fetchOne();
+                new (lua::alloc<RowT>(L)) RowT(std::move(row));
+                return 1;
+            } catch (const std::exception& e) { luaL_error(L, e.what()); }
+            return 0;
+        })
+        .prop("one", [](lua_State* L) -> int {
+            auto r = lua::check<RowResultT>(L, 1);
+            try {
+                RowT row = r->fetchOne();
+                new (lua::alloc<RowT>(L)) RowT(std::move(row));
+                return 1;
+            } catch (const std::exception& e) { luaL_error(L, e.what()); }
+            return 0;
+        })
+        .fun("fetchAll", [](lua_State* L) -> int {
+            auto r = lua::check<RowResultT>(L, 1);
+            try {
+                auto rows = r->fetchAll();
+                return push_row_table(L, rows);
+            } catch (const std::exception& e) { luaL_error(L, e.what()); }
+            return 0;
+        })
+        .prop("all", [](lua_State* L) -> int {
+            auto r = lua::check<RowResultT>(L, 1);
+            try {
+                auto rows = r->fetchAll();
+                return push_row_table(L, rows);
+            } catch (const std::exception& e) { luaL_error(L, e.what()); }
+            return 0;
+        });
 }
 
-static int push_result_info(lua_State* L, mysqlx::Result& r) {
-    lua_newtable(L);
-    lua_pushinteger(L, (lua_Integer)r.getAffectedItemsCount());
-    lua_setfield(L, -2, "affected");
-    try {
-        std::uint64_t id = r.getAutoIncrementValue();
-        lua_pushinteger(L, (lua_Integer)id);
-        lua_setfield(L, -2, "auto_id");
-    } catch (...) {
-    // no auto id
-    }
-    // warnings
-    unsigned wc = r.getWarningsCount();
-    lua_newtable(L);
-    for (unsigned i = 0; i < wc; ++i) {
-        auto w = r.getWarning(i);
-        lua_newtable(L);
-        lua_pushinteger(L, (lua_Integer)w.getCode());
-        lua_setfield(L, -2, "code");
-        std::string msg = w.getMessage();
-        lua_pushlstring(L, msg.c_str(), msg.size());
-        lua_setfield(L, -2, "message");
-        auto lvl = w.getLevel();
-        lua_pushinteger(L, lvl);
-        lua_setfield(L, -2, "level");
-        lua_rawseti(L, -2, (int)i + 1);
-    }
-    lua_setfield(L, -2, "warnings");
-    return 1;
+void bind_result_types(lua_State *L)
+{
+    using namespace mysqlx;
+
+    bind_result_type<Result, true>(L, "Result");
+    bind_row_result_type<RowResult, Row, false>(L, "RowResult");
+
+    bind_row_result_type<SqlResult, Row, true>(L, "SqlResult")
+        .prop("hasData", [](lua_State* L) -> int {
+            auto r = lua::check<SqlResult>(L, 1);
+            try {
+                lua_pushboolean(L, r->hasData());
+                return 1;
+            } catch (const std::exception& e) { luaL_error(L, e.what()); }
+            return 0;
+        })
+        .fun("nextResult", [](lua_State* L) -> int {
+            auto r = lua::check<SqlResult>(L, 1);
+            try {
+                bool more = r->nextResult();
+                lua_pushboolean(L, more);
+                return 1;
+            } catch (const std::exception& e) { luaL_error(L, e.what()); }
+            return 0;
+        });
+
+    bind_row_result_type<DocResult, DbDoc, false>(L, "DocResult");
 }
 
 extern "C" int luaopen_mysql_core(lua_State *L)
@@ -170,7 +287,7 @@ extern "C" int luaopen_mysql_core(lua_State *L)
     using namespace mysqlx;
 
     lua::bind::add<Session>(L, "Session")
-            .fun("sql", [](lua_State* L) -> int {
+            .fun("exec", [](lua_State* L) -> int {
                 auto s = lua::check<Session>(L, 1);
                 try {
                     const char* query = luaL_checkstring(L, 2);
@@ -181,7 +298,7 @@ extern "C" int luaopen_mysql_core(lua_State *L)
                 } catch (const std::exception& e) { luaL_error(L, e.what()); }
                 return 0;
             })
-            .fun("statement", [](lua_State* L) -> int {
+            .fun("sql", [](lua_State* L) -> int {
                 auto s = lua::check<Session>(L, 1);
                 try {
                     const char* query = luaL_checkstring(L, 2);
@@ -263,6 +380,14 @@ extern "C" int luaopen_mysql_core(lua_State *L)
                 }
                 return 0;
             })
+            .meta_fun("__len", [](lua_State *L) -> int {
+                auto r = lua::check<Row>(L, 1);
+                try {
+                    lua_pushinteger(L, (lua_Integer)r->colCount());
+                    return 1;
+                } catch (const std::exception& e) { luaL_error(L, e.what()); }
+                return 0;
+            })
             .fun("type", [](lua_State *L) -> int {
                 auto r = lua::check<Row>(L, 1);
                 int index = (int)luaL_checkinteger(L, 2) - 1;
@@ -341,13 +466,14 @@ extern "C" int luaopen_mysql_core(lua_State *L)
                 auto stmt = lua::check<SqlStatement>(L, 1);
                 try {
                     SqlResult r = stmt->execute();
-                    if (r.count() == 0) { lua_newtable(L); return 1; }
-                    auto rows = r.fetchAll();
-                    return push_row_table(L, rows);
+                    new (lua::alloc<SqlResult>(L)) SqlResult(std::move(r));
+                    return 1;
                 } catch (const std::exception& e) { luaL_error(L, e.what()); }
                 return 0;
             })
             ;
+
+    bind_result_types(L);
 
     lua::bind::add<Schema>(L, "Schema")
             .prop("name", [](lua_State* L) -> int {
@@ -491,7 +617,8 @@ extern "C" int luaopen_mysql_core(lua_State *L)
                 auto s = lua::check<TableSelect>(L, 1);
                 try {
                     RowResult rr = s->execute();
-                    return push_rowresult(L, rr);
+                    new (lua::alloc<RowResult>(L)) RowResult(std::move(rr));
+                    return 1;
                 } catch (const std::exception& e) { luaL_error(L, e.what()); }
                 return 0;
             })
@@ -510,7 +637,8 @@ extern "C" int luaopen_mysql_core(lua_State *L)
                 auto ins = lua::check<TableInsert>(L, 1);
                 try {
                     Result r = ins->execute();
-                    return push_result_info(L, r);
+                    new (lua::alloc<Result>(L)) Result(std::move(r));
+                    return 1;
                 }
                 catch (const std::exception& e) { luaL_error(L, e.what()); }
                 return 0;
@@ -559,13 +687,14 @@ extern "C" int luaopen_mysql_core(lua_State *L)
                 auto up = lua::check<TableUpdate>(L, 1);
                 try {
                     Result r = up->execute();
-                    return push_result_info(L, r);
+                    new (lua::alloc<Result>(L)) Result(std::move(r));
+                    return 1;
                 } catch (const std::exception& e) { luaL_error(L, e.what()); }
                 return 0;
             })
             ;
 
-    lua::bind::add<TableRemove>(L, "TableDelete")
+    lua::bind::add<TableRemove>(L, "TableRemove")
             .fun("where", [](lua_State* L) -> int {
                 auto del = lua::check<TableRemove>(L, 1);
                 const char* e = luaL_checkstring(L,2);
@@ -604,7 +733,8 @@ extern "C" int luaopen_mysql_core(lua_State *L)
                 auto del = lua::check<TableRemove>(L, 1);
                 try {
                     Result r = del->execute();
-                    return push_result_info(L, r);
+                    new (lua::alloc<Result>(L)) Result(std::move(r));
+                    return 1;
                 } catch (const std::exception& e) { luaL_error(L, e.what()); }
                 return 0;
             })
