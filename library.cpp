@@ -767,10 +767,10 @@ extern "C" int luaopen_mysql_core(lua_State *L)
     return 1;
 }
 
-extern "C" int luaopen_mysql(lua_State *L)
+/*extern "C" int luaopen_mysql(lua_State *L)
 {
     lua_getglobal(L, "require");
     lua_pushstring(L, "mysql.impl");
     lua_call(L, 1, 1);
     return 1;
-}
+}*/
